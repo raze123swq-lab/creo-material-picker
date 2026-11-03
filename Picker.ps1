@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference='Stop'
+$ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type @'
 using System;
@@ -11,6 +11,10 @@ public class CreoFocus {
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint id);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder b,int n);
+ [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc fn,IntPtr arg);
+ [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+ delegate bool EnumProc(IntPtr h,IntPtr arg);
+ public static void CloseMassWindows(uint pid){var windows=new System.Collections.Generic.List<IntPtr>();EnumWindows((h,arg)=>{uint owner;GetWindowThreadProcessId(h,out owner);if(owner==pid){var title=new System.Text.StringBuilder(256);GetWindowText(h,title,256);var s=title.ToString();if(s.StartsWith("信息窗口 (")||s.StartsWith("Information Window (")||s.StartsWith("质量属性:")||s.StartsWith("Mass Properties:"))windows.Add(h);}return true;},IntPtr.Zero);foreach(var h in windows)PostMessage(h,0x10,IntPtr.Zero,IntPtr.Zero);System.Threading.Thread.Sleep(250);EnumWindows((h,arg)=>{uint owner;GetWindowThreadProcessId(h,out owner);if(owner==pid){var title=new System.Text.StringBuilder(256);GetWindowText(h,title,256);var s=title.ToString();if(s=="模型属性"||s=="Model Properties")PostMessage(h,0x10,IntPtr.Zero,IntPtr.Zero);}return true;},IntPtr.Zero);}
 }
 '@
 $rows=@(Import-Csv -LiteralPath (Join-Path $PSScriptRoot 'index.csv') -Encoding UTF8)
@@ -131,13 +135,27 @@ $watch.Add_Tick({
  $u=$m.Groups[2].Value.Trim();if(!$units.ContainsKey($u)){ $watch.Stop();$hint.Text="报告质量单位未识别：$u";return }
  $g=[double]::Parse($m.Groups[1].Value,[cultureinfo]::InvariantCulture)*$units[$u]
  $msg=('{0}   ·   {1:G9} g' -f $script:part,$g)
- $watch.Stop();$hint.Text=$msg;[void][Windows.Forms.MessageBox]::Show($form,$msg,'当前零件质量')
+ $watch.Stop();$hint.Text=$msg
+ $dialog=New-Object Windows.Forms.Form
+ $dialog.Text='当前零件质量';$dialog.StartPosition='CenterParent';$dialog.ClientSize=New-Object Drawing.Size(380,185)
+ $dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+ $value=New-Object Windows.Forms.TextBox
+ $value.Text=('{0:G9} g' -f $g);$value.ReadOnly=$true;$value.Font=New-Object Drawing.Font('Microsoft YaHei UI',19,[Drawing.FontStyle]::Bold)
+ $value.SetBounds(20,18,340,43);$dialog.Controls.Add($value)
+ $label=New-Object Windows.Forms.Label;$label.Text=$script:part;$label.SetBounds(20,66,340,24);$dialog.Controls.Add($label)
+ $copy=New-Object Windows.Forms.Button;$copy.Text='复制质量';$copy.SetBounds(20,129,95,37)
+ $copy.Add_Click({[Windows.Forms.Clipboard]::SetText($value.Text)});$dialog.Controls.Add($copy)
+ $close=New-Object Windows.Forms.CheckBox;$close.Text='确认后关闭 Creo 质量窗口';$close.SetBounds(124,96,240,25);$dialog.Controls.Add($close)
+ $ok=New-Object Windows.Forms.Button;$ok.Text='确认';$ok.SetBounds(265,129,95,37);$ok.DialogResult='OK';$dialog.AcceptButton=$ok;$dialog.Controls.Add($ok)
+ $answer=$dialog.ShowDialog($form);$shouldClose=$answer -eq 'OK' -and $close.Checked;$dialog.Dispose()
+ if($shouldClose){[CreoFocus]::CloseMassWindows([uint32]$script:creoPid)}
 })
 function Invoke-PartMass([bool]$assign){
  try {
   $item=$list.SelectedItem;if($assign -and !$item){return}
   $procs=@(Get-Process xtop -ErrorAction SilentlyContinue)
   if($procs.Count -ne 1){throw '请只打开一个 Creo 会话，并打开目标零件。'}
+  $script:creoPid=$procs[0].Id
   $shell=New-Object -ComObject WScript.Shell
   [void]$shell.AppActivate($procs[0].Id)
   Start-Sleep -Milliseconds 250
@@ -166,3 +184,4 @@ function Invoke-PartMass([bool]$assign){
 $read.Add_Click({Invoke-PartMass $false})
 $button.Add_Click({Invoke-PartMass $true});$list.Add_DoubleClick({Invoke-PartMass $true})
 [void]$form.ShowDialog()
+
